@@ -10,6 +10,7 @@ import os
 import ollama
 
 from agent.orchestrator import investigate
+from agent.verify import verify_report
 
 MODEL = os.getenv("ANALYST_MODEL", "llama3.1:8b")
 
@@ -47,7 +48,9 @@ def make_report(path: str) -> dict:
         ],
         options={"temperature": 0},
     )
-    return {"report": resp.message.content.strip(), "findings": findings}
+    report_text = resp.message.content.strip()
+    check = verify_report(report_text, findings)
+    return {"report": report_text, "findings": findings, "check": check}
 
 
 if __name__ == "__main__":
@@ -56,3 +59,8 @@ if __name__ == "__main__":
     print("EXECUTIVE SUMMARY")
     print("=" * 60 + "\n")
     print(result["report"])
+    check = result["check"]
+    print("\n" + "-" * 60)
+    print(f"VERIFICATION: {len(check['supported'])}/{check['n_report_numbers']} numbers trace back to the data (trust: {check['trust']}).")
+    if check["unsupported"]:
+        print(f"WARNING - these figures are NOT backed by the analysis: {check['unsupported']}")
