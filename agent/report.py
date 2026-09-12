@@ -36,21 +36,44 @@ def format_findings(findings: list) -> str:
     return "\n\n".join(parts)
 
 
-def make_report(path: str) -> dict:
-    findings = investigate(path)
-    results_text = format_findings(findings)
+MAX_REPAIRS = 2
 
+
+def _write_report(results_text: str, extra: str = "") -> str:
     resp = ollama.chat(
         model=MODEL,
         messages=[
             {"role": "system", "content": REPORT_SYSTEM},
-            {"role": "user", "content": f"Analysis results:\n\n{results_text}\n\nWrite the executive summary."},
+            {"role": "user", "content": f"Analysis results:\n\n{results_text}\n\nWrite the executive summary.{extra}"},
         ],
         options={"temperature": 0},
     )
-    report_text = resp.message.content.strip()
+    return resp.message.content.strip()
+
+
+def make_report(path: str) -> dict:
+    findings = investigate(path)
+    results_text = format_findings(findings)
+
+    report_text = _write_report(results_text)
     check = verify_report(report_text, findings)
-    return {"report": report_text, "findings": findings, "check": check}
+    repairs = 0
+
+    # Self-repair: if any number isn't backed by the data, tell the agent
+    # exactly which ones and have it rewrite using only real figures.
+    while check["unsupported"] and repairs < MAX_REPAIRS:
+        repairs += 1
+        bad = ", ".join(str(n) for n in check["unsupported"])
+        extra = (
+            f"\n\nIMPORTANT: your previous draft included these numbers that do NOT appear "
+            f"in the analysis results: {bad}. Those are wrong - you misread the data. "
+            f"Rewrite the report using ONLY numbers that appear verbatim in the results above. "
+            f"Drop or correct any figure you cannot find there."
+        )
+        report_text = _write_report(results_text, extra)
+        check = verify_report(report_text, findings)
+
+    return {"report": report_text, "findings": findings, "check": check, "repairs": repairs}
 
 
 if __name__ == "__main__":
@@ -61,6 +84,8 @@ if __name__ == "__main__":
     print(result["report"])
     check = result["check"]
     print("\n" + "-" * 60)
+    if result["repairs"]:
+        print(f"(self-repaired the report {result['repairs']} time(s) to remove unsupported numbers)")
     print(f"VERIFICATION: {len(check['supported'])}/{check['n_report_numbers']} numbers trace back to the data (trust: {check['trust']}).")
     if check["unsupported"]:
-        print(f"WARNING - these figures are NOT backed by the analysis: {check['unsupported']}")
+        print(f"WARNING - still unsupported after repairs: {check['unsupported']}")
