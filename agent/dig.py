@@ -99,3 +99,89 @@ def verify_and_correct(dig: dict, path: str) -> dict:
         dig["filter_value"] = true_top
         dig["reason"] = f"{true_top} is highest by {metric}"
     return dig
+
+
+# --- The digging loop -------------------------------------------------------
+from agent.orchestrator import write_code_for
+from agent.self_correct import run_with_fixes
+from agent.analyst import data_context, strip_fences
+
+MAX_DEPTH = 2
+
+DIG_CODE_SYSTEM = """You are a data analyst writing a short pandas snippet.
+
+{context}
+
+Task: filter df to rows where {filter_col} == {filter_value!r}, then show total {metric}
+broken down by {breakdown_col}, sorted high to low. print() the result with a short label.
+
+Rules: df is already loaded. pandas as pd, numpy as np available. No file reading, no plotting.
+Reply with ONLY code, no fences, no explanation."""
+
+
+def _run_dig(dig: dict, path: str, context: str) -> dict:
+    resp = ollama.chat(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": DIG_CODE_SYSTEM.format(
+                context=context, filter_col=dig["filter_col"], filter_value=dig["filter_value"],
+                metric=dig["metric"], breakdown_col=dig["breakdown_col"])},
+            {"role": "user", "content": "Write the analysis."},
+        ],
+        options={"temperature": 0},
+    )
+    code = strip_fences(resp.message.content)
+    result = run_with_fixes(code, path, context)
+    label = f"{dig['metric']} for {dig['filter_col']}={dig['filter_value']} broken down by {dig['breakdown_col']}"
+    return {"label": label, "output": result["output"], "ok": result["ok"], "code": result["code"]}
+
+
+def investigate_deeper(finding: dict, path: str) -> list:
+    """Starting from one finding, follow leads: propose a dig, verify/correct it,
+    run it, then consider digging into THAT result. Returns the investigation trail."""
+    context = data_context(path)
+    trail = []
+    current = finding
+
+    for depth in range(MAX_DEPTH):
+        dig = propose_dig(current, path)
+        dig = verify_and_correct(dig, path)
+        ok, reason = validate_dig(dig, path)
+        if not ok:
+            trail.append({"depth": depth + 1, "dug": False, "reason": reason})
+            break
+
+        step = _run_dig(dig, path, context)
+        trail.append({
+            "depth": depth + 1,
+            "dug": True,
+            "reason": dig.get("reason"),
+            "corrected": dig.get("_corrected"),
+            "label": step["label"],
+            "output": step["output"],
+            "ok": step["ok"],
+        })
+        if not step["ok"]:
+            break
+        current = step  # dig into the new result next round
+
+    return trail
+
+
+if __name__ == "__main__":
+    finding = {
+        "label": "segment: sales by region",
+        "output": "region\nCentral    113105.90\nEast       128721.80\nSouth       71117.16\nWest       165109.06",
+    }
+    trail = investigate_deeper(finding, "data/sales.csv")
+    print("INVESTIGATION TRAIL\n")
+    print("Start: segment: sales by region (West leads)\n")
+    for step in trail:
+        if step["dug"]:
+            note = f"  [corrected: {step['corrected']}]" if step.get("corrected") else ""
+            print(f"Depth {step['depth']}: dug because '{step['reason']}'{note}")
+            print(f"  -> {step['label']}")
+            print("  " + (step["output"].replace("\n", "\n  ") if step["ok"] else "(failed)"))
+            print()
+        else:
+            print(f"Depth {step['depth']}: stopped - {step['reason']}\n")
