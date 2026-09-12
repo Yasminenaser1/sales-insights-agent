@@ -37,3 +37,33 @@ def check_directions(report: str) -> list:
                 "actual": actual,
             })
     return contradictions
+
+
+def fix_directions(report: str) -> tuple[str, int]:
+    """Deterministically correct wrong direction words.
+
+    check_directions() already knows the true direction from the numbers, so we
+    don't ask the model to fix it - we replace the wrong word in place. Returns
+    (corrected_report, number_of_fixes). This is the 'let code do what code can
+    do reliably' principle: the LLM is bad at up/down, so we enforce it.
+    """
+    # A sensible replacement for each wrong word, matching direction.
+    UP_REPLACEMENT = "rose"
+    DOWN_REPLACEMENT = "fell"
+
+    fixes = 0
+    contradictions = check_directions(report)
+    for c in contradictions:
+        correct_word = UP_REPLACEMENT if c["actual"] == "increase" else DOWN_REPLACEMENT
+        # Replace just the wrong direction word inside the specific phrase, so we
+        # don't accidentally change a correct use of the same word elsewhere.
+        fixed_phrase = re.sub(
+            r"\b" + re.escape(c["word"]) + r"\b",
+            correct_word,
+            c["phrase"],
+            count=1,
+        )
+        if fixed_phrase != c["phrase"]:
+            report = report.replace(c["phrase"], fixed_phrase, 1)
+            fixes += 1
+    return report, fixes

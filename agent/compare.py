@@ -15,7 +15,7 @@ from agent.orchestrator import write_code_for
 from agent.self_correct import run_with_fixes
 from agent.analyst import data_context
 from agent.verify import verify_report
-from agent.direction_check import check_directions
+from agent.direction_check import check_directions, fix_directions
 
 MODEL = os.getenv("ANALYST_MODEL", "llama3.1:8b")
 MAX_REPAIRS = 2
@@ -89,22 +89,11 @@ def compare(path_a: str, path_b: str) -> dict:
         report = _write_comparison(a_text, b_text, extra)
         check = verify_report(report, all_findings)
 
-    # Second guardrail: fix any direction words that contradict the numbers.
-    dir_fixes = 0
-    contradictions = check_directions(report)
-    while contradictions and dir_fixes < MAX_REPAIRS:
-        dir_fixes += 1
-        problems = "; ".join(
-            f"you wrote '{c['word']}' but {c['from']:.0f} to {c['to']:.0f} is a {c['actual']}"
-            for c in contradictions
-        )
-        extra = (f"\n\nIMPORTANT: some direction words are wrong: {problems}. "
-                 f"Rewrite so every 'increased/decreased/rose/fell' matches the actual numbers. "
-                 f"Keep all numbers exactly as they appear in the results.")
-        report = _write_comparison(a_text, b_text, extra)
-        contradictions = check_directions(report)
+    # Second guardrail: deterministically correct any direction words that
+    # contradict the numbers. The LLM is unreliable at up/down, so instead of
+    # asking it to rewrite (which whack-a-moles), code fixes the words directly.
+    report, dir_fixes = fix_directions(report)
 
-    check = verify_report(report, all_findings)  # re-verify numbers after the rewrite
     return {"report": report, "check": check, "repairs": repairs, "dir_fixes": dir_fixes}
 
 
