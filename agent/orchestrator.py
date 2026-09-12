@@ -11,7 +11,7 @@ import ollama
 
 from agent.planner import make_plan
 from agent.validate import validate_plan
-from agent.sandbox import run_code
+from agent.self_correct import run_with_fixes
 from agent.analyst import strip_fences, data_context
 
 MODEL = os.getenv("ANALYST_MODEL", "llama3.1:8b")
@@ -61,16 +61,18 @@ def investigate(path: str) -> list:
         label = f"{step['type']}: {step['metric']} by {step['col']}"
         print(f"[{i}/{len(plan)}] {label} ...")
         code = write_code_for(step, context)
-        result = run_code(code, path)
+        result = run_with_fixes(code, path, context)
         findings.append({
             "step": step,
             "label": label,
-            "code": code,
+            "code": result["code"],
             "output": result["output"],
-            "error": result["error"],
+            "error": result.get("error", ""),
             "ok": result["ok"],
+            "attempts": len(result["attempts"]),
         })
-        print("   " + ("done" if result["ok"] else "FAILED: " + result["error"][:80]))
+        tries = f" (fixed itself in {len(result['attempts'])} tries)" if result["ok"] and len(result["attempts"]) > 1 else ""
+        print("   " + ("done" + tries if result["ok"] else "FAILED after retries"))
     return findings
 
 
